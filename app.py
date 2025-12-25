@@ -1,833 +1,680 @@
+# 导入Streamlit库，用于快速构建Web应用
 import streamlit as st
+# 导入Pandas库，用于数据处理和分析
 import pandas as pd
+# 导入NumPy库，用于数值计算
 import numpy as np
+# 导入Matplotlib的pyplot模块，用于绘制图表
 import matplotlib.pyplot as plt
+# 导入io模块，用于处理字节流
 import io
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+# 导入joblib库，用于加载预训练的机器学习模型文件
 import joblib
+# 导入warnings模块，用于控制警告信息的显示
 import warnings
-import os
+# 从matplotlib的工具模块导入坐标轴定位器，用于更精细的图表布局控制
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-# ==================== 基础配置：忽略警告 + 中文/深色主题 ====================
+# ==================== 全局配置与初始化 ====================
+# 忽略Matplotlib库产生的UserWarning类型警告，避免控制台输出冗余信息
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
-# 永久解决中文显示问题 + 黑底白字图表主题
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans', 'Arial Unicode MS']
+# 设置Matplotlib支持中文显示，指定可用的中文字体列表
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+# 解决Matplotlib中负号显示为方块的问题
 plt.rcParams['axes.unicode_minus'] = False
+# 批量更新Matplotlib的绘图样式参数，适配深色主题
 plt.rcParams.update({
-    'figure.facecolor': '#0E1117',
-    'axes.facecolor': '#0E1117',
-    'text.color': 'white',
-    'axes.labelcolor': 'white',
-    'xtick.color': 'white',
-    'ytick.color': 'white',
-    'axes.edgecolor': 'white',
-    'grid.color': '#404040',
-    'grid.alpha': 0.4,
-    'legend.frameon': False,
+    'figure.facecolor': '#0E1117',        # 图表整体背景色设为深灰黑色
+    'axes.facecolor': '#0E1117',          # 坐标轴区域背景色设为深灰黑色
+    'text.color': 'black',                # 所有文字颜色设为黑色（适配浅色背景）
+    'axes.labelcolor': 'black',           # 坐标轴标签颜色设为黑色
+    'xtick.color': 'black',               # x轴刻度文字颜色设为黑色
+    'ytick.color': 'black',               # y轴刻度文字颜色设为黑色
+    'axes.edgecolor': 'black',            # 坐标轴边框颜色设为黑色
+    'grid.color': '#404040',              # 网格线颜色设为浅灰色
+    'grid.alpha': 0.4,                    # 网格线透明度设为0.4（半透明）
+    # 调整图表子图的边距，消除默认空白，保证不同图表高度一致
+    'figure.subplot.left': 0.08,          # 子图左侧边距
+    'figure.subplot.right': 0.92,         # 子图右侧边距
+    'figure.subplot.top': 0.95,           # 子图顶部边距
+    'figure.subplot.bottom': 0.08,        # 子图底部边距
 })
 
-# ==================== 核心函数：加载模型和数据（带容错处理） ====================
+# 配置Streamlit页面的基础属性
+st.set_page_config(
+    page_title="学生成绩分析与预测系统",  # 网页标题
+    layout="wide",                       # 页面布局设为宽屏模式
+    page_icon="🎓",                      # 网页标签图标
+    initial_sidebar_state="expanded"     # 初始状态下侧边栏展开
+)
+
+# ==================== 全局常量（精准控制高度）====================
+UNIFIED_HEIGHT = 5.0  # 定义所有图表/表格的统一高度（单位：英寸）
+COLUMN_RATIO = [2.5, 1]  # 定义页面列的宽度比例为2.5:1（左图:right表）
+DPI = 100  # 定义统一的图片分辨率（每英寸像素数），保证像素级高度匹配
+LEFT_FIG_WIDTH = 12.0  # 定义左侧图表的宽度（单位：英寸）
+RIGHT_FIG_WIDTH = 8.0  # 定义右侧表格图片的宽度（单位：英寸）
+
+# ==================== 缓存函数：数据与模型加载 ====================
+# 使用st.cache_resource装饰器缓存模型加载结果，避免重复加载提升性能
 @st.cache_resource
 def load_model():
-    """加载机器学习模型和标签编码器"""
+    """加载训练好的预测模型和标签编码器"""
     try:
+        # 从指定路径加载预训练的成绩预测模型
         model = joblib.load("models/xgb_final_predictor.pkl")
+        # 加载性别标签编码器（用于将性别字符串转为模型可识别的数值）
         le_gender = joblib.load("models/le_gender.pkl")
+        # 加载专业标签编码器（用于将专业字符串转为模型可识别的数值）
         le_major = joblib.load("models/le_major.pkl")
+        # 返回加载的模型和编码器
         return model, le_gender, le_major
-    except FileNotFoundError:
-        st.warning("⚠️ 模型文件未找到！成绩预测功能将不可用")
-        return None, None, None
     except Exception as e:
-        st.error(f"加载模型失败：{str(e)}")
+        # 加载失败时在页面显示警告信息
+        st.warning(f"模型加载失败：{str(e)}")
+        # 加载失败返回None
         return None, None, None
 
+# 使用st.cache_data装饰器缓存数据加载结果，避免重复生成模拟数据
 @st.cache_data
 def load_data():
-    """加载学生成绩数据"""
+    """加载学生数据，文件不存在时生成模拟数据"""
     try:
+        # 尝试从CSV文件读取真实学生数据
         return pd.read_csv("student_data_adjusted_rounded.csv")
-    except FileNotFoundError:
-        st.warning("⚠️ 数据文件未找到！将使用模拟数据展示")
-        # 生成模拟数据
+    except Exception:
+        # 读取失败时显示警告，告知用户使用模拟数据
+        st.warning("数据文件未找到，使用模拟数据")
+        # 定义模拟数据的专业列表
         majors = ['大数据管理', '人工智能', '计算机科学', '软件工程', '信息安全']
+        # 定义模拟数据的性别列表
         genders = ['男', '女']
+        # 构建模拟数据集字典
         data = {
-            '专业': np.random.choice(majors, 200),
-            '性别': np.random.choice(genders, 200),
-            '每周学习时长（小时）': np.random.uniform(5, 40, 200),
-            '上课出勤率': np.random.uniform(0.6, 1.0, 200),
-            '期中考试分数': np.random.uniform(50, 95, 200),
-            '期末考试分数': np.random.uniform(50, 95, 200),
-            '作业完成率': np.random.uniform(0.6, 1.0, 200),
+            '专业': np.random.choice(majors, 200),  # 随机生成200条专业数据
+            '性别': np.random.choice(genders, 200),  # 随机生成200条性别数据
+            '每周学习时长（小时）': np.random.uniform(5, 40, 200),  # 生成5-40小时的学习时长
+            '上课出勤率': np.random.uniform(0.6, 1.0, 200),  # 生成0.6-1.0的出勤率
+            '期中考试分数': np.random.uniform(50, 95, 200),  # 生成50-95分的期中成绩
+            '期末考试分数': np.random.uniform(50, 95, 200),  # 生成50-95分的期末成绩
+            '作业完成率': np.random.uniform(0.6, 1.0, 200),  # 生成0.6-1.0的作业完成率
+            # 生成200个学号（2023开头，6位数字补零）
             '学号': [f"2023{str(i).zfill(6)}" for i in range(1, 201)]
         }
+        # 将字典转换为Pandas DataFrame并返回
         return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"加载数据失败：{str(e)}")
-        return pd.DataFrame()
 
-# 加载模型和数据
-model, le_gender, le_major = load_model()
-df = load_data()
-
-# ==================== Streamlit 基础配置 ====================
-st.set_page_config(
-    page_title="学生成绩分析与预测系统",
-    layout="wide",
-    page_icon="🎓"
-)
-
-# ==================== 自定义CSS样式（美化界面） ====================
-st.markdown("""
-<style>
-/* ================== 全局背景 ================== */
-.stApp {
-    background: linear-gradient(180deg, #0B0F14 0%, #000000 100%);
-    color: #E6E6E6;
-}
-
-/* ================== 侧边栏 ================== */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #2A2A2A 0%, #1C1C1C 100%);
-    border-right: 1px solid #333333;
-}
-
-/* 侧边栏内容文字 */
-section[data-testid="stSidebar"] * {
-    color: #DDDDDD;
-    font-size: 15px;
-}
-
-/* 侧边栏标题 */
-section[data-testid="stSidebar"] h1,
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 {
-    color: #FFFFFF;
-    font-weight: 700;
-}
-
-/* ================== Radio / Select ================== */
-div[data-baseweb="radio"] > div {
-    background-color: #262626;
-    border-radius: 12px;
-    padding: 10px;
-}
-
-div[data-baseweb="radio"] label {
-    padding: 6px 10px;
-    border-radius: 8px;
-    transition: all 0.25s ease;
-}
-
-/* Hover */
-div[data-baseweb="radio"] label:hover {
-    background-color: #333333;
-}
-
-/* 选中项 */
-div[data-baseweb="radio"] input:checked + div {
-    background: linear-gradient(135deg, #00C6FF, #0072FF);
-    color: #FFFFFF;
-    box-shadow: 0 0 12px rgba(0, 114, 255, 0.6);
-}
-
-/* ================== 按钮 ================== */
-button {
-    background: linear-gradient(135deg, #00C6FF, #0072FF);
-    border-radius: 14px;
-    border: none;
-    color: white;
-    font-weight: 600;
-    transition: all 0.3s ease;
-}
-
-button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 20px rgba(0, 114, 255, 0.4);
-}
-
-/* ================== 输入框 ================== */
-input, textarea {
-    background-color: #1A1A1A !important;
-    color: #FFFFFF !important;
-    border-radius: 10px !important;
-    border: 1px solid #333333 !important;
-}
-
-input:focus, textarea:focus {
-    border-color: #00C6FF !important;
-    box-shadow: 0 0 0 2px rgba(0,198,255,0.25) !important;
-}
-
-/* ================== Selectbox ================== */
-div[data-baseweb="select"] {
-    background-color: #1A1A1A;
-    border-radius: 10px;
-}
-
-/* ================== Slider ================== */
-div[data-baseweb="slider"] > div {
-    color: white;
-}
-
-div[data-baseweb="slider"] div[role="slider"] {
-    background: #00C6FF;
-}
-
-/* ================== 表格 DataFrame - 深黑主题 ================== */
-[data-testid="stDataFrame"] {
-    background-color: #000000 !important;
-    border: 1px solid #1a1a1a !important;
-    border-radius: 10px;
-    overflow: hidden;
-}
-
-[data-testid="stDataFrame"] .ag-root-wrapper,
-[data-testid="stDataFrame"] .ag-body-viewport,
-[data-testid="stDataFrame"] .ag-cell {
-    background-color: #000000 !important;
-    color: #e0e0e0 !important;
-}
-
-[data-testid="stDataFrame"] .ag-header {
-    background-color: #0d1117 !important;
-    border-bottom: 1px solid #1e1e1e !important;
-}
-
-[data-testid="stDataFrame"] .ag-header-cell-text {
-    color: #ffffff !important;
-    font-weight: 600;
-}
-
-/* 行背景 - 纯黑 + 轻微 hover 效果 */
-[data-testid="stDataFrame"] .ag-row {
-    background-color: #000000 !important;
-}
-
-[data-testid="stDataFrame"] .ag-row:hover {
-    background-color: #1a1a1a !important;
-}
-
-/* 网格线 */
-[data-testid="stDataFrame"] .ag-cell {
-    border-color: #1e1e1e !important;
-}
-
-/* 选中行 */
-[data-testid="stDataFrame"] .ag-row-selected {
-    background-color: #0a2a4a !important;
-}
-
-/* 单元格文字强制 */
-[data-testid="stDataFrame"] td,
-[data-testid="stDataFrame"] .ag-cell-value {
-    color: #f0f0f0 !important;
-}
-
-/* ================== 指标 Metric ================== */
-[data-testid="stMetric"] {
-    background: linear-gradient(145deg, #161B22, #0D1117);
-    padding: 18px;
-    border-radius: 16px;
-    box-shadow: inset 0 0 0 1px #222;
-}
-
-/* ================== Expander ================== */
-details {
-    background-color: #121212;
-    border-radius: 14px;
-    padding: 10px;
-}
-
-/* ================== 图片 ================== */
-img {
-    border-radius: 16px;
-}
-
-/* ================== 分割线 ================== */
-hr {
-    border: none;
-    height: 1px;
-    background: linear-gradient(to right, transparent, #333, transparent);
-}
-
-/* ================== 滚动条 ================== */
-::-webkit-scrollbar {
-    width: 8px;
-}
-
-::-webkit-scrollbar-track {
-    background: #0B0F14;
-}
-
-::-webkit-scrollbar-thumb {
-    background: #2E2E2E;
-    border-radius: 10px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-    background: #00C6FF;
-}
-
-/* ================== 全局文字增强 ================== */
-body, .stApp {
-    color: #F2F2F2;
-}
-
-/* Markdown / 正文 */
-.stMarkdown, .stText, .stWrite {
-    color: #F0F0F0 !important;
-    line-height: 1.75;
-}
-
-/* 标题 */
-h1, h2, h3 {
-    color: #FFFFFF !important;
-    text-shadow: 0 0 6px rgba(255,255,255,0.15);
-}
-
-h4, h5, h6 {
-    color: #E6E6E6 !important;
-}
-
-/* ================== 表单标签 ================== */
-label, .stSelectbox label, .stSlider label, .stTextInput label {
-    color: #EAEAEA !important;
-    font-weight: 500;
-}
-
-/* ================== Radio 文本 ================== */
-div[data-baseweb="radio"] label span {
-    color: #F0F0F0 !important;
-}
-
-/* ================== Expander ================== */
-details summary {
-    color: #FFFFFF !important;
-    font-weight: 600;
-}
-
-/* ================== Metric ================== */
-[data-testid="stMetric"] label {
-    color: #B8C7E0 !important;
-}
-
-[data-testid="stMetric"] div {
-    color: #FFFFFF !important;
-}
-
-/* ================== 提示信息 ================== */
-.stAlert p {
-    color: #FFFFFF !important;
-    font-weight: 500;
-}
-
-/* 隐藏 Streamlit 顶部白色 Header */
-header[data-testid="stHeader"] {
-    display: none;
-}
-
-/* 去掉页面顶部多余空白 */
-.block-container {
-    padding-top: 1rem;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ==================== 侧边栏导航 ====================
-st.sidebar.image("https://img.icons8.com/fluency/96/graduation-cap.png", width=100)
-st.sidebar.title("导航菜单")
-
-page = st.sidebar.radio(
-    "选择功能模块",
-    ["项目首页", "专业数据分析", "期末成绩预测"],
-    index=0
-)
-
-# ==================== 页面1：项目首页 ====================
-if page == "项目首页":
-    # 首页自定义样式
-    st.markdown("""
-    <style>
-    .section {
-        padding: 20px 0 10px 0;
-        border-bottom: 1px solid #2A2A2A;
-    }
-    .card {
-        background: linear-gradient(145deg, #141922, #0D1117);
-        padding: 18px;
-        border-radius: 16px;
-        box-shadow: inset 0 0 0 1px #1F2933;
-        height: 100%;
-    }
-    .card-title {
-        font-size: 18px;
-        font-weight: 700;
-        color: #FFFFFF;
-        margin-bottom: 10px;
-    }
-    .card-text {
-        color: #E0E0E0;
-        line-height: 1.7;
-        font-size: 15px;
-    }
-    .tech {
-        background-color: #111827;
-        padding: 14px;
-        border-radius: 12px;
-        text-align: center;
-        font-weight: 600;
-        color: #EAEAEA;
-        box-shadow: inset 0 0 0 1px #1F2933;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # 页面标题
-    st.markdown("## 🎓 学生成绩分析与预测系统")
-    st.markdown(
-        "<span style='color:#B0B0B0;font-size:16px'>基于 Streamlit + 机器学习的学生成绩智能分析平台</span>",
-        unsafe_allow_html=True
+# ==================== 辅助函数 ====================
+def df_to_table_image(df, title=""):
+    """生成高度统一的表格图片（纯Matplotlib实现）"""
+    # 创建指定尺寸的绘图画布（宽度适配右侧，高度全局统一）
+    fig, ax = plt.subplots(
+        figsize=(RIGHT_FIG_WIDTH, UNIFIED_HEIGHT),  # 画布尺寸（宽，高）
+        dpi=DPI,                                     # 画布分辨率
+        frameon=False                                # 关闭画布边框，减少额外高度
     )
+    # 关闭坐标轴显示（表格不需要坐标轴）
+    ax.axis('off')
+    
+    # 如果传入了标题，则绘制表格标题
+    if title:
+        ax.text(
+            0.5, 0.98, title,                    # 标题文字内容和位置（居中靠上）
+            ha='center', va='top',               # 水平居中，垂直靠上对齐
+            fontsize=14, color='black',          # 字体大小14，颜色黑色
+            transform=ax.transAxes,              # 使用相对坐标系（0-1）
+            # 标题背景框样式：圆角，内边距0.2，背景色深灰，透明度0.8
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='#1f2a44', alpha=0.8)
+        )
+    
+    # 在画布上绘制表格（核心代码）
+    table = ax.table(
+        cellText=df.values,                      # 表格数据（DataFrame的值）
+        colLabels=df.columns,                    # 表格列标题（DataFrame的列名）
+        loc='center',                            # 表格位置居中
+        cellLoc='center',                        # 单元格内容居中对齐
+        # 列宽度自适应：每列宽度=1/列数
+        colWidths=[1/len(df.columns)] * len(df.columns),
+        # 精准控制表格位置和尺寸，占满5英寸高度（[左, 下, 宽, 高]）
+        bbox=[0.02, 0.02, 0.96, 0.90]
+    )
+    
+    # 表格样式优化（放大且占满高度）
+    table.auto_set_font_size(False)  # 关闭自动字体大小调整，手动设置
+    table.set_fontsize(11)           # 设置表格字体大小为11号
+    table.scale(1.0, 2.0)            # 表格缩放：水平1倍，垂直2倍（填满高度）
 
-    # 项目概述
-    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
-    st.markdown("### 📌 项目概述")
-    col1, col2 = st.columns([2, 1])
-    with col1:
+    # 遍历所有单元格，设置样式
+    for (i, j), cell in table.get_celld().items():
+        if i == 0:  # 表头行（第0行）
+            cell.set_facecolor('#1f2a44')  # 表头背景色设为深灰蓝
+            # 表头文字：白色、加粗、12号字体
+            cell.set_text_props(color='white', weight='bold', fontsize=12)
+        else:  # 内容行
+            # 内容行背景色交替（深灰/稍浅灰），提升可读性
+            cell.set_facecolor('#0f1626' if i % 2 == 1 else '#141b2e')
+            # 内容文字：浅灰蓝、11号字体
+            cell.set_text_props(color='#d0d8e0', fontsize=11)
+        cell.set_edgecolor('#2a3b5a')  # 单元格边框色设为灰蓝色
+        # 强制设置单元格高度，保证不同行数的表格高度统一
+        cell.set_height(1/(len(df)+1.5))
+
+    # 创建字节流缓冲区，用于保存图片（无需写入本地文件）
+    buf = io.BytesIO()
+    # 将表格保存为PNG图片到缓冲区
+    plt.savefig(
+        buf,                        # 保存到字节流缓冲区
+        format='png',               # 图片格式为PNG
+        dpi=DPI,                    # 图片分辨率
+        bbox_inches='tight',        # 紧凑布局，去除额外空白
+        pad_inches=0.0,             # 完全去掉内边距，保证高度精准
+        facecolor='#0E1117'         # 图片背景色设为深灰黑色
+    )
+    # 将缓冲区指针移到开头，准备读取
+    buf.seek(0)
+    # 关闭Matplotlib画布，释放内存
+    plt.close(fig)
+    # 返回包含图片数据的字节流
+    return buf
+
+# ==================== 页面内容函数 ====================
+def show_home_page():
+    """展示项目首页内容"""
+    # 设置页面主标题
+    st.title("🎓 学生成绩分析与预测系统")
+    # 设置页面副标题/说明文字
+    st.caption("基于 Streamlit + 机器学习的学生成绩智能分析平台")
+
+    # 设置二级标题：项目概述
+    st.subheader("📌 项目概述")
+    # 创建3:2比例的两列布局
+    col1, col2 = st.columns([3, 2])
+    with col1:  # 左侧列
+        # 显示项目概述的Markdown文本
         st.markdown("""
-        本项目是一个基于 **Streamlit** 的学生成绩分析与预测系统，
-        通过 **数据可视化 + 机器学习模型**，帮助教师和学生深入了解学习状态，
-        并对期末成绩进行智能预测。
-        **主要特点：**
-        - 📊 多维度成绩数据可视化分析
-        - 🧠 基于机器学习的成绩预测模型
-        - 🎯 支持个性化学习行为分析
-        - ⚡ 操作简洁，结果直观，适合教学场景
+        本项目通过数据可视化与机器学习模型，帮助教师和学生：
+        - 多维度分析成绩影响因素
+        - 探索不同专业的学习表现差异
+        - 对期末成绩进行智能预测
+        - 支持个性化学习行为洞察
         """)
-    with col2:
-        st.image(
-            "专业数据分析.png",
-            use_container_width=True
+    with col2:  # 右侧列
+        try:
+            # 尝试加载并显示项目相关图片，宽度适配列宽
+            st.image("专业数据分析.png", use_container_width=True)
+        except:
+            # 图片加载失败时显示提示信息
+            st.info("示例图片未找到")
+
+    # 设置二级标题：项目目标
+    st.subheader("🚀 项目目标")
+    # 创建三等分列布局
+    cols = st.columns(3)
+    with cols[0]:  # 第一列
+        # 显示数据分析目标的信息卡片
+        st.info("**数据分析**\n识别关键影响因素\n发现成绩变化趋势")
+    with cols[1]:  # 第二列
+        # 显示可视化展示目标的信息卡片
+        st.info("**可视化展示**\n专业对比\n性别差异\n学习行为分析")
+    with cols[2]:  # 第三列
+        # 显示成绩预测目标的信息卡片
+        st.info("**成绩预测**\nXGBoost 模型\n个性化预测\n提前预警")
+
+    # 设置二级标题：技术栈
+    st.subheader("🛠 技术栈")
+    # 创建四等分列布局
+    cols = st.columns(4)
+    with cols[0]:  # 第一列
+        # 显示Streamlit技术说明
+        st.markdown("**Streamlit**\n交互界面")
+    with cols[1]:  # 第二列
+        # 显示Pandas/NumPy技术说明
+        st.markdown("**Pandas / NumPy**\n数据处理")
+    with cols[2]:  # 第三列
+        # 显示Matplotlib技术说明
+        st.markdown("**Matplotlib**\n图表绘制")
+    with cols[3]:  # 第四列
+        # 显示XGBoost技术说明
+        st.markdown("**XGBoost**\n机器学习")
+
+def show_major_analysis_page(df):
+    """展示专业数据分析页面"""
+    # 设置页面主标题
+    st.title("📈 专业数据分析")
+
+    # 检查数据是否为空，为空则显示警告并返回
+    if df.empty:
+        st.warning("暂无可用数据")
+        return
+
+    # ==================== 模块1：各专业男女性别比例 ====================
+    # 设置二级标题：各专业男女性别比例
+    st.subheader("1. 各专业男女性别比例")
+    # 创建2.5:1比例的两列布局
+    col1, col2 = st.columns(COLUMN_RATIO)
+    
+    with col1:  # 左侧列：绘制性别比例柱状图
+        # 按专业分组，统计性别数量并归一化（计算比例），缺失值填充0
+        gender_ratio = df.groupby('专业')['性别'].value_counts(normalize=True).unstack(fill_value=0)
+        # 重新索引列，确保只有"男"和"女"两列，缺失列填充0
+        gender_ratio = gender_ratio.reindex(columns=['男', '女'], fill_value=0)\
+                                  .sort_values('男', ascending=False)  # 按男性比例降序排序
+
+        # 创建指定尺寸的绘图画布（左侧宽度，统一高度）
+        fig, ax = plt.subplots(
+            figsize=(LEFT_FIG_WIDTH, UNIFIED_HEIGHT),  # 画布尺寸
+            dpi=DPI,                                   # 分辨率
+            frameon=False                              # 关闭边框
+        )
+        
+        # 生成x轴坐标（专业数量个点）
+        x = np.arange(len(gender_ratio))
+        width = 0.35  # 柱子宽度
+        # 绘制男性比例柱状图（蓝色）
+        ax.bar(x - width/2, gender_ratio['男'], width, label='男', color='#4DA9FF')
+        # 绘制女性比例柱状图（粉色）
+        ax.bar(x + width/2, gender_ratio['女'], width, label='女', color='#FF6B9D')
+        
+        # 优化图表显示（保证清晰，不改变高度）
+        ax.set_ylabel('占比', fontsize=10)  # 设置y轴标签，字体10号
+        ax.set_ylim(0, 1)  # y轴范围设为0-1（比例）
+        # 设置y轴刻度标签，字体9号
+        ax.set_yticklabels([f'{int(i*100)}%' for i in ax.get_yticks()], fontsize=9)
+        ax.set_xticks(x)  # 设置x轴刻度位置
+        # 设置x轴刻度标签（专业名），旋转25度，右对齐，字体9号
+        ax.set_xticklabels(gender_ratio.index, rotation=25, ha='right', fontsize=9)
+        ax.legend(fontsize=9, loc='upper right')  # 设置图例，字体9号，位置右上
+        
+        # 为每个柱子添加数值标签（百分比）
+        for bar in ax.patches:
+            h = bar.get_height()  # 获取柱子高度（比例）
+            if h > 0.02:  # 只显示比例>2%的标签，避免重叠
+                ax.text(bar.get_x() + bar.get_width()/2, h + 0.015, 
+                        f'{h:.1%}', ha='center', va='bottom', fontsize=8)
+        
+        # 紧凑布局，去除额外空白，保证高度精准
+        plt.tight_layout(pad=0.0)
+        # 在Streamlit中显示图表，宽度适配列宽
+        st.pyplot(fig, use_container_width=True)
+        # 关闭画布，释放内存
+        plt.close(fig)
+
+    with col2:  # 右侧列：显示性别比例表格图片
+        # 将比例转换为百分比，保留1位小数，转为字符串并加%
+        ratio_table = (gender_ratio * 100).round(1).astype(str) + '%'
+        # 添加总人数列：按专业统计人数
+        ratio_table['总人数'] = df['专业'].value_counts().reindex(ratio_table.index)
+        # 只保留总人数、男、女三列
+        ratio_table = ratio_table[['总人数', '男', '女']]
+        # 生成表格图片
+        table_img = df_to_table_image(ratio_table, "性别比例明细")
+        # 显示表格图片，宽度适配列宽
+        st.image(table_img, use_container_width=True)
+
+    # 添加水平分隔线，区分不同模块
+    st.divider()
+
+    # ==================== 模块2：各专业学习投入与成绩对比 ====================
+    # 设置二级标题：各专业学习投入与成绩对比分析
+    st.subheader("2. 各专业学习投入与成绩对比分析")
+    # 创建2.5:1比例的两列布局
+    col1, col2 = st.columns(COLUMN_RATIO)
+    
+    with col1:  # 左侧列：绘制学习时长与成绩对比图
+        # 按专业分组，计算学习时长、期中成绩、期末成绩的平均值，保留2位小数
+        major_stats = df.groupby('专业').agg({
+            '每周学习时长（小时）': 'mean',
+            '期中考试分数': 'mean',
+            '期末考试分数': 'mean'
+        }).round(2).sort_values('期末考试分数', ascending=False)  # 按期末成绩降序排序
+
+        # 创建指定尺寸的绘图画布
+        fig, ax1 = plt.subplots(
+            figsize=(LEFT_FIG_WIDTH, UNIFIED_HEIGHT),
+            dpi=DPI,
+            frameon=False
+        )
+        
+        # 绘制学习时长柱状图（浅蓝色）
+        bars = ax1.bar(major_stats.index, major_stats['每周学习时长（小时）'],
+                       color='#5DADE2', alpha=0.9, label='平均每周学习时长', width=0.6)
+        # 设置左y轴标签，颜色与柱子一致，字体10号
+        ax1.set_ylabel('学习时长（小时）', color='#5DADE2', fontsize=10)
+        # 设置左y轴刻度颜色与标签一致，字体9号
+        ax1.tick_params(axis='y', labelcolor='#5DADE2', labelsize=9)
+        # 设置左y轴范围，顶部留20%空间显示标签
+        ax1.set_ylim(0, major_stats['每周学习时长（小时）'].max() * 1.2)
+
+        # 为学习时长柱子添加数值标签
+        for bar in bars:
+            h = bar.get_height()  # 获取柱子高度
+            ax1.text(bar.get_x() + bar.get_width()/2, h + 0.5, 
+                    f'{h:.1f}h', ha='center', va='bottom', fontsize=8)
+
+        # 创建共享x轴的右y轴（双轴图）
+        ax2 = ax1.twinx()
+        # 绘制期中成绩折线图（青绿色，圆形标记）
+        ax2.plot(major_stats.index, major_stats['期中考试分数'], 'o-', 
+                color='#00D4B5', label='平均期中成绩', linewidth=2, markersize=4)
+        # 绘制期末成绩折线图（橙粉色，方形标记）
+        ax2.plot(major_stats.index, major_stats['期末考试分数'], 's-', 
+                color='#FF6B9D', label='平均期末成绩', linewidth=2, markersize=4)
+        # 设置右y轴标签，字体10号
+        ax2.set_ylabel('平均成绩（分）', fontsize=10)
+        # 设置右y轴刻度字体9号
+        ax2.tick_params(labelsize=9)
+
+        # 优化标签显示（不超出高度）
+        # 设置x轴刻度标签，旋转25度，右对齐，字体9号
+        ax1.set_xticklabels(major_stats.index, rotation=25, ha='right', fontsize=9)
+        # 设置图表标题，字体11号，内边距5
+        ax1.set_title('学习时间与成绩对比', fontsize=11, pad=5)
+        # 设置图例，位置居中靠下，3列显示，字体9号
+        fig.legend(loc='upper center', bbox_to_anchor=(0.5, -0.02), ncol=3, fontsize=9)
+        
+        # 紧凑布局，去除额外空白
+        plt.tight_layout(pad=0.0)
+        # 在Streamlit中显示图表
+        st.pyplot(fig, use_container_width=True)
+        # 关闭画布
+        plt.close(fig)
+
+    with col2:  # 右侧列：显示学习投入与成绩表格图片
+        # 生成表格图片
+        table_img = df_to_table_image(major_stats, "学习投入与成绩明细")
+        # 显示表格图片
+        st.image(table_img, use_container_width=True)
+
+    # 添加水平分隔线
+    st.divider()
+
+    # ==================== 模块3：各专业平均上课出勤率 ====================
+    # 设置二级标题：各专业平均上课出勤率
+    st.subheader("3. 各专业平均上课出勤率")
+    # 创建2.5:1比例的两列布局
+    col1, col2 = st.columns(COLUMN_RATIO)
+    
+    with col1:  # 左侧列：绘制出勤率柱状图
+        # 按专业分组，计算平均出勤率，按出勤率降序排序
+        attendance = df.groupby('专业')['上课出勤率'].mean().sort_values(ascending=False)
+        
+        # 创建指定尺寸的绘图画布
+        fig, ax = plt.subplots(
+            figsize=(LEFT_FIG_WIDTH, UNIFIED_HEIGHT),
+            dpi=DPI,
+            frameon=False
+        )
+        # 生成渐变颜色列表（基于viridis配色方案）
+        colors = plt.cm.viridis(np.linspace(0.3, 1.0, len(attendance)))
+        
+        # 绘制出勤率柱状图，使用渐变颜色，宽度0.6
+        bars = ax.bar(attendance.index, attendance.values, color=colors, width=0.6)
+        # 设置y轴标签，字体10号
+        ax.set_ylabel('平均出勤率', fontsize=10)
+        # 设置y轴范围0-1
+        ax.set_ylim(0, 1)
+        # 设置y轴刻度标签，字体9号
+        ax.set_yticklabels([f'{int(x*100)}%' for x in ax.get_yticks()], fontsize=9)
+        # 设置x轴刻度标签，旋转25度，右对齐，字体9号
+        ax.set_xticklabels(attendance.index, rotation=25, ha='right', fontsize=9)
+        
+        # 为每个柱子添加出勤率数值标签
+        for bar, value in zip(bars, attendance.values):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                    f'{value:.2%}', ha='center', va='bottom', fontsize=8)
+        
+        # 设置图表标题，字体11号，内边距5
+        ax.set_title('各专业平均出勤率', fontsize=11, pad=5)
+        # 紧凑布局
+        plt.tight_layout(pad=0.0)
+        # 显示图表
+        st.pyplot(fig, use_container_width=True)
+        # 关闭画布
+        plt.close(fig)
+
+    with col2:  # 右侧列：显示出勤率表格图片
+        # 构建出勤率DataFrame：原始值（保留4位小数）和百分比字符串
+        attendance_df = pd.DataFrame({
+            '平均出勤率': attendance.round(4),
+            '百分比': (attendance * 100).round(2).astype(str) + '%'
+        })
+        # 生成表格图片
+        table_img = df_to_table_image(attendance_df, "出勤率明细")
+        # 显示表格图片
+        st.image(table_img, use_container_width=True)
+
+    # 添加水平分隔线
+    st.divider()
+
+    # ==================== 模块4：大数据管理专业核心指标 ====================
+    # 设置二级标题：大数据管理专业核心指标
+    st.subheader("4. 大数据管理专业核心指标")
+    # 筛选出大数据管理专业的数据
+    bd_df = df[df['专业'] == '大数据管理']
+    
+    # 检查大数据管理专业是否有数据
+    if not bd_df.empty:
+        # 计算核心指标
+        avg_attendance = bd_df['上课出勤率'].mean()          # 平均出勤率
+        avg_final_score = bd_df['期末考试分数'].mean()       # 平均期末成绩
+        pass_rate = (bd_df['期末考试分数'] >= 60).mean()     # 及格率（分数≥60的比例）
+        avg_study_hours = bd_df['每周学习时长（小时）'].mean()  # 平均学习时长
+
+        # 指标卡片（紧凑布局）：创建四等分列布局
+        cols = st.columns(4)
+        cols[0].metric("平均出勤率", f"{avg_attendance:.1%}")          # 显示平均出勤率指标卡
+        cols[1].metric("平均期末成绩", f"{avg_final_score:.1f} 分")     # 显示平均期末成绩指标卡
+        cols[2].metric("及格率", f"{pass_rate:.1%}")                  # 显示及格率指标卡
+        cols[3].metric("平均学习时长", f"{avg_study_hours:.1f} 小时/周")  # 显示平均学习时长指标卡
+
+        # 设置三级标题：核心指标对比
+        st.markdown("### 核心指标对比")
+        # 创建2.5:1比例的两列布局
+        col1, col2 = st.columns(COLUMN_RATIO)
+        
+        with col1:  # 左侧列：绘制核心指标柱状图
+            # 创建指定尺寸的绘图画布
+            fig, ax = plt.subplots(
+                figsize=(LEFT_FIG_WIDTH, UNIFIED_HEIGHT),
+                dpi=DPI,
+                frameon=False
+            )
+            # 定义核心指标列表（名称、数值、颜色）
+            indicators = [
+                ("平均出勤率", avg_attendance * 100, '#2ECC71'),    # 出勤率（转百分比），绿色
+                ("平均期末成绩", avg_final_score, '#3498DB'),        # 期末成绩，蓝色
+                ("及格率", pass_rate * 100, '#E74C3C'),              # 及格率（转百分比），红色
+                ("平均学习时长", avg_study_hours, '#F39C12')         # 学习时长，橙色
+            ]
+
+            # 提取指标名称、数值、颜色
+            categories = [ind[0] for ind in indicators]
+            values = [ind[1] for ind in indicators]
+            colors = [ind[2] for ind in indicators]
+
+            # 绘制核心指标柱状图，宽度0.6，白色边框
+            bars = ax.bar(categories, values, color=colors, width=0.6, 
+                         edgecolor='white', linewidth=1)
+            
+            # 优化标题和标签
+            # 设置图表标题，字体11号，内边距5，白色文字
+            ax.set_title('大数据管理专业核心指标', fontsize=11, pad=5, color='white')
+            # 设置y轴标签，字体10号，白色文字
+            ax.set_ylabel('数值', fontsize=10, color='white')
+            # 设置刻度颜色为白色，字体9号
+            ax.tick_params(colors='white', labelsize=9)
+            # 设置x轴刻度标签，旋转15度，右对齐，字体9号
+            ax.set_xticklabels(categories, rotation=15, ha='right', fontsize=9)
+
+            # 动态设置y轴上限，保证标签显示（顶部留20%空间）
+            max_val = max(values)
+            ax.set_ylim(0, max_val * 1.2)
+
+            # 为每个柱子添加数值标签（根据指标类型显示不同格式）
+            for bar, (label, value, _) in zip(bars, indicators):
+                if "出勤率" in label or "及格率" in label:
+                    text = f"{value:.1f}%"  # 百分比格式
+                elif "成绩" in label:
+                    text = f"{value:.1f}分"  # 分数格式
+                else:
+                    text = f"{value:.1f}h"   # 小时格式
+                
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + max_val * 0.02,
+                    text,
+                    ha='center', va='bottom',
+                    color='white', fontsize=9, fontweight='bold'
+                )
+
+            # 深色主题适配
+            ax.set_facecolor('#0E1117')  # 坐标轴背景色
+            fig.patch.set_facecolor('#0E1117')  # 图表背景色
+            # 设置所有坐标轴边框为白色
+            for spine in ax.spines.values():
+                spine.set_color('white')
+            # 添加水平网格线，浅灰色，半透明，虚线
+            ax.grid(True, axis='y', alpha=0.25, color='#505050', linestyle='--')
+            
+            # 紧凑布局
+            plt.tight_layout(pad=0.0)
+            # 显示图表
+            st.pyplot(fig, use_container_width=True)
+            # 关闭画布
+            plt.close(fig)
+        
+        with col2:  # 右侧列：显示核心指标表格图片
+            # 构建核心指标DataFrame
+            bd_stats = pd.DataFrame({
+                '指标': ['平均出勤率', '平均期末成绩', '及格率', '平均学习时长'],
+                '数值': [
+                    f"{avg_attendance:.1%}",
+                    f"{avg_final_score:.1f} 分",
+                    f"{pass_rate:.1%}",
+                    f"{avg_study_hours:.1f} 小时/周"
+                ]
+            })
+            # 生成表格图片
+            table_img = df_to_table_image(bd_stats, "大数据管理专业明细")
+            # 显示表格图片
+            st.image(table_img, use_container_width=True)
+    else:
+        # 大数据管理专业无数据时显示提示信息
+        st.info("暂无 '大数据管理' 专业的数据")
+
+def show_score_prediction_page(model, le_gender, le_major, df):
+    """展示期末成绩预测页面"""
+    # 设置页面主标题
+    st.title("🔮 期末成绩预测")
+
+    # 检查模型是否加载成功
+    if model is None:
+        # 模型加载失败时显示错误信息
+        st.error("预测模型不可用，请检查模型文件是否存在")
+        return
+
+    # 设置二级标题：填写以下信息进行预测
+    st.subheader("填写以下信息进行预测")
+    # 创建表单容器（提交按钮需要放在表单内）
+    with st.form("预测表单"):
+        # 创建两等分列布局
+        col1, col2 = st.columns(2)
+        with col1:  # 左侧列：输入基本信息
+            # 文本输入框：学号（仅展示，默认值2023123456）
+            st.text_input("学号（仅展示）", "2023123456", key="id")
+            # 下拉选择框：性别（选项：男、女）
+            gender = st.selectbox("性别", ["男", "女"])
+            # 下拉选择框：专业（选项为数据中的唯一专业值，排序）
+            major = st.selectbox("专业", sorted(df['专业'].unique()))
+        with col2:  # 右侧列：输入学习表现信息
+            # 滑块：每周学习时长（范围5-40，默认20）
+            study_hours = st.slider("每周学习时长（小时）", 5, 40, 20)
+            # 滑块：上课出勤率（范围0.60-1.00，步长0.01，默认0.90）
+            attendance = st.slider("上课出勤率", 0.60, 1.00, 0.90, step=0.01)
+            # 滑块：期中考试分数（范围0-100，默认75）
+            midterm = st.slider("期中考试分数", 0, 100, 75)
+            # 滑块：作业完成率（范围0.60-1.00，步长0.01，默认0.90）
+            homework = st.slider("作业完成率", 0.60, 1.00, 0.90, step=0.01)
+
+        # 创建表单提交按钮，宽度适配容器
+        submitted = st.form_submit_button("立即预测", use_container_width=True, type="primary")
+
+        # 当表单提交时执行预测逻辑
+        if submitted:
+            try:
+                # 将性别字符串转换为模型可识别的编码
+                g_code = le_gender.transform([gender])[0]
+                # 将专业字符串转换为模型可识别的编码
+                m_code = le_major.transform([major])[0]
+                # 构建模型输入特征数组（二维数组，符合scikit-learn输入格式）
+                input_data = np.array([[g_code, m_code, study_hours, attendance, midterm, homework]])
+                # 使用模型预测期末成绩
+                pred = model.predict(input_data)[0]
+
+                # 显示预测结果（二级标题，加粗显示分数）
+                st.subheader(f"预测期末成绩：**{pred:.2f} 分**")
+                
+                # ==================== 预测结果下方添加图片 ====================
+                # 设置图片宽度（可根据需要调整）
+                img_width = 400
+                
+                # 根据分数是否及格显示不同图片
+                if pred >= 60:
+                    st.success("极大概率及格！继续保持～")  # 显示成功提示
+                    st.balloons()  # 触发气球动画效果
+                    # 显示及格鼓励的图片（本地图片）
+                    st.image(
+                        "pass.jpg",  # 及格图片路径
+                        caption="🎉 恭喜！继续保持优秀表现～",
+                        width=img_width
+                    )
+                else:
+                    st.error("存在挂科风险，建议加强复习与出勤")  # 显示错误提示
+                    # 显示不及格提醒的图片（本地图片）
+                    st.image(
+                        "nopass.jpg",  # 不及格图片路径
+                        caption="📖 加油！多投入时间复习，提高出勤率～",
+                        width=img_width
+                    )
+                # ==================== 图片添加结束 ====================
+                
+            except Exception as e:
+                # 预测过程中出错时显示错误信息
+                st.error(f"预测出错：{str(e)}")
+
+# ==================== 主程序入口 ====================
+def main():
+    # 加载机器学习模型和标签编码器
+    model, le_gender, le_major = load_model()
+    # 加载学生数据（真实数据或模拟数据）
+    df = load_data()
+
+    # 创建侧边栏容器
+    with st.sidebar:
+        # 在侧边栏显示图片（毕业帽图标），宽度100px
+        st.image("https://img.icons8.com/fluency/96/graduation-cap.png", width=100)
+        # 设置侧边栏标题
+        st.title("导航菜单")
+        # 侧边栏单选框：选择要显示的页面
+        page = st.radio(
+            "选择功能模块",
+            ["项目首页", "专业数据分析", "期末成绩预测"]
         )
 
-    # 项目目标
-    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
-    st.markdown("### 🚀 项目目标")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("""
-        <div class="card">
-            <div class="card-title">🎯 目标一：数据分析</div>
-            <div class="card-text">
-                • 识别成绩影响因素<br>
-                • 探索成绩变化趋势<br>
-                • 提供数据支撑决策
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c2:
-        st.markdown("""
-        <div class="card">
-            <div class="card-title">📊 目标二：可视化展示</div>
-            <div class="card-text">
-                • 专业对比分析<br>
-                • 性别差异研究<br>
-                • 学习行为识别
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with c3:
-        st.markdown("""
-        <div class="card">
-            <div class="card-title">🧠 目标三：成绩预测</div>
-            <div class="card-text">
-                • 构建预测模型<br>
-                • 个性化成绩预测<br>
-                • 提前干预预警
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # 根据用户选择的页面，调用对应的显示函数
+    if page == "项目首页":
+        show_home_page()
+    elif page == "专业数据分析":
+        show_major_analysis_page(df)
+    elif page == "期末成绩预测":
+        show_score_prediction_page(model, le_gender, le_major, df)
 
-    # 技术架构
-    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
-    st.markdown("### 🛠 技术架构")
-    t1, t2, t3, t4 = st.columns(4)
-    with t1:
-        st.markdown("<div class='tech'>Streamlit<br>前端框架</div>", unsafe_allow_html=True)
-    with t2:
-        st.markdown("<div class='tech'>Pandas / NumPy<br>数据处理</div>", unsafe_allow_html=True)
-    with t3:
-        st.markdown("<div class='tech'>Matplotlib / Plotly<br>数据可视化</div>", unsafe_allow_html=True)
-    with t4:
-        st.markdown("<div class='tech'>Scikit-learn / XGBoost<br>机器学习</div>", unsafe_allow_html=True)
+    # 添加水平分隔线（页脚上方）
+    st.divider()
+    # 设置页脚文字
+    st.caption("学生成绩分析与预测系统")
 
-# ==================== 页面2：专业数据分析 ====================
-elif page == "专业数据分析":
-    st.markdown("# 📈 专业数据分析")
-
-    if df.empty:
-        st.warning("暂无数据，请先上传或生成数据")
-    else:
-        # 辅助函数：将 DataFrame 转为 Matplotlib 表格图片（适配深色主题）
-        def df_to_table_image(df, title="", figsize=(5.5, 4.5), dpi=140):
-            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-            ax.axis('off')
-
-            if title:
-                ax.set_title(title, fontsize=13, color='white', pad=20)
-
-            # 绘制表格
-            table = ax.table(
-                cellText=df.values,
-                colLabels=df.columns,
-                rowLabels=df.index if df.index.name is not None else None,
-                loc='center',
-                cellLoc='center',
-                colWidths=[0.32] * len(df.columns)
-            )
-
-            table.auto_set_font_size(False)
-            table.set_fontsize(10)
-            table.scale(1.3, 1.6)
-
-            # 深色主题美化
-            for (i, j), cell in table.get_celld().items():
-                if i == 0:  # 表头
-                    cell.set_facecolor('#1f2a44')
-                    cell.set_text_props(color='white', weight='bold')
-                else:
-                    cell.set_facecolor('#0f1626' if i % 2 == 1 else '#141b2e')
-                cell.set_edgecolor('#2a3b5a')
-                cell.set_text_props(color='#d0d8e0')
-
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', dpi=dpi,
-                        facecolor='#0E1117', transparent=False)
-            buf.seek(0)
-            plt.close(fig)
-            return buf
-
-        # 图表1 + 右边图片
-        cols1 = st.columns([2.2, 1])
-        with cols1[0]:
-            with st.container(height=520):
-                st.subheader("1. 各专业男女性别比例")
-                gender_ratio = df.groupby('专业')['性别'].value_counts(normalize=True).unstack(fill_value=0)
-                gender_ratio = gender_ratio.reindex(columns=['男', '女'], fill_value=0).sort_values('男', ascending=False)
-
-                fig, ax = plt.subplots(figsize=(10, 5.5))
-                x = np.arange(len(gender_ratio))
-                width = 0.35
-                ax.bar(x - width/2, gender_ratio['男'], width, label='男', color='#4DA9FF', edgecolor='white')
-                ax.bar(x + width/2, gender_ratio['女'], width, label='女', color='#FF6B9D', edgecolor='white')
-                ax.set_title('各专业男女性别比例（双层柱状图）', fontsize=16, pad=20)
-                ax.set_ylabel('占比')
-                ax.set_ylim(0, 1)
-                ax.set_yticks(np.arange(0, 1.1, 0.2))
-                ax.set_yticklabels([f'{int(i*100)}%' for i in ax.get_yticks()])
-                ax.set_xticks(x)
-                ax.set_xticklabels(gender_ratio.index, rotation=30, ha='right')
-                ax.legend()
-
-                for bar in ax.patches:
-                    h = bar.get_height()
-                    if h > 0.02:
-                        ax.text(bar.get_x() + bar.get_width()/2, h + 0.02, f'{h:.1%}',
-                                ha='center', va='bottom', color='white', fontsize=10, fontweight='bold')
-
-                for spine in ax.spines.values():
-                    spine.set_color('white')
-
-                st.pyplot(fig)
-                plt.close(fig)
-
-        with cols1[1]:
-            with st.container(height=520):
-                with st.expander("1. 各专业性别比例明细表", expanded=True):
-                    ratio_table = (gender_ratio * 100).round(1).astype(str) + '%'
-                    ratio_table['总人数'] = df['专业'].value_counts().reindex(ratio_table.index)
-                    ratio_table = ratio_table[['总人数', '男', '女']]
-
-                    img_buf = df_to_table_image(
-                        ratio_table,
-                        title="各专业性别比例明细"
-                    )
-                    st.image(img_buf)
-
-        st.markdown("---")
-
-        # 图表2 + 右边图片
-        cols2 = st.columns([2.2, 1])
-        with cols2[0]:
-            with st.container(height=680):
-                st.subheader("2. 各专业学习投入与成绩对比分析")
-                major_stats = df.groupby('专业').agg({
-                    '每周学习时长（小时）': 'mean',
-                    '期中考试分数': 'mean',
-                    '期末考试分数': 'mean'
-                }).round(2).sort_values('期末考试分数', ascending=False)
-
-                fig, ax1 = plt.subplots(figsize=(12, 7.5))
-                bars = ax1.bar(major_stats.index, major_stats['每周学习时长（小时）'],
-                               color='#5DADE2', alpha=0.9, label='平均每周学习时长（小时）', width=0.6)
-                ax1.set_ylabel('学习时长（小时）', color='#5DADE2', fontsize=13, fontweight='bold')
-                ax1.tick_params(axis='y', labelcolor='#5DADE2')
-                ax1.set_ylim(0, major_stats['每周学习时长（小时）'].max() * 1.2)
-
-                for bar in bars:
-                    h = bar.get_height()
-                    ax1.text(bar.get_x() + bar.get_width()/2, h + 0.8, f'{h:.1f}h',
-                             ha='center', va='bottom', color='white', fontsize=11, fontweight='bold')
-
-                ax2 = ax1.twinx()
-                scores = pd.concat([major_stats['期中考试分数'], major_stats['期末考试分数']])
-                padding = (scores.max() - scores.min()) * 0.4
-                y_min = max(50, scores.min() - padding)
-                y_max = min(100, scores.max() + padding)
-                ax2.set_ylim(y_min, y_max)
-
-                ax2.plot(major_stats.index, major_stats['期中考试分数'], 'o-', linewidth=4, color='#00D4B5',
-                         label='平均期中成绩', markersize=9)
-                ax2.plot(major_stats.index, major_stats['期末考试分数'], 's-', linewidth=4, color='#FFB866',
-                         label='平均期末成绩', markersize=9)
-
-                offset = (y_max - y_min) * 0.03
-                for i, (mid, final) in enumerate(zip(major_stats['期中考试分数'], major_stats['期末考试分数'])):
-                    ax2.text(i, mid + offset, f'{mid}', ha='center', va='bottom',
-                             color='#00D4B5', fontsize=10, fontweight='bold')
-                    ax2.text(i, final + offset, f'{final}', ha='center', va='bottom',
-                             color='#FFB866', fontsize=10, fontweight='bold')
-
-                ax2.set_ylabel('平均成绩（分）', color='white', fontsize=13, fontweight='bold')
-                ax2.tick_params(axis='y', labelcolor='white')
-
-                ax1.set_title('各专业平均学习时间与平均成绩对比\n（柱状图=学习时长 | 折线图=期中/期末成绩）',
-                              fontsize=17, pad=40, color='white', fontweight='bold')
-                plt.xticks(rotation=30, ha='right')
-
-                handles1, labels1 = ax1.get_legend_handles_labels()
-                handles2, labels2 = ax2.get_legend_handles_labels()
-                plt.legend(handles1 + handles2, labels1 + labels2,
-                           loc='upper center', bbox_to_anchor=(0.5, -0.18), ncol=3, fontsize=12)
-                plt.subplots_adjust(bottom=0.25, top=0.85)
-
-                for spine in list(ax1.spines.values()) + list(ax2.spines.values()):
-                    spine.set_color('white')
-
-                st.pyplot(fig)
-                plt.close(fig)
-
-        with cols2[1]:
-            with st.container(height=680):
-                with st.expander("2. 各专业学习投入与成绩明细", expanded=True):
-                    img_buf = df_to_table_image(
-                        major_stats,
-                        title="各专业学习投入与成绩明细"
-                    )
-                    st.image(img_buf)
-
-        st.markdown("---")
-
-        # 图表3 + 右边图片
-        cols3 = st.columns([2.2, 1])
-        with cols3[0]:
-            with st.container(height=560):
-                st.subheader("3. 各专业平均上课出勤率分析")
-                attendance = df.groupby('专业')['上课出勤率'].mean().sort_values(ascending=False)
-                colors = plt.cm.viridis(np.linspace(0.3, 1.0, len(attendance)))
-                fig, ax = plt.subplots(figsize=(11, 6.5))
-                bars = ax.bar(attendance.index, attendance.values, color=colors, edgecolor='white',
-                              linewidth=1.2, width=0.7)
-                ax.set_title('各专业平均上课出勤率\n（颜色越深 = 出勤率越高）',
-                             fontsize=18, pad=30, color='white', fontweight='bold')
-                ax.set_ylabel('平均出勤率', color='white', fontsize=13)
-                ax.set_ylim(0, 1)
-                ax.set_yticks(np.arange(0, 1.1, 0.1))
-                ax.set_yticklabels([f'{int(x*100)}%' for x in ax.get_yticks()])
-
-                for bar, value in zip(bars, attendance.values):
-                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.015,
-                            f'{value:.2%}', ha='center', va='bottom',
-                            color='white', fontsize=11, fontweight='bold')
-
-                plt.xticks(rotation=30, ha='right')
-
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="3%", pad=0.3)
-                sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis,
-                                           norm=plt.Normalize(vmin=attendance.min(), vmax=attendance.max()))
-                sm.set_array([])
-                cbar = plt.colorbar(sm, cax=cax)
-                cbar.set_label('出勤率高 → 低', color='white', fontsize=12)
-                cbar.ax.yaxis.set_tick_params(color='white')
-                plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
-
-                for spine in ax.spines.values():
-                    spine.set_color('white')
-
-                st.pyplot(fig)
-                plt.close(fig)
-
-        with cols3[1]:
-            with st.container(height=560):
-                with st.expander("3. 各专业平均出勤率明细", expanded=True):
-                    attendance_df = pd.DataFrame({
-                        '平均出勤率': attendance.round(4),
-                        '平均出勤率(%)': (attendance * 100).round(2).astype(str) + '%'
-                    })
-
-                    img_buf = df_to_table_image(
-                        attendance_df,
-                        title="各专业平均出勤率明细"
-                    )
-                    st.image(img_buf)
-
-        st.markdown("---")
-
-        # 图表4：大数据管理专业核心指标（4个柱形图横向排列：1×4布局）
-        with st.container(height=380):  # 调整容器高度适配横向布局
-            st.subheader("4. 大数据管理专业核心指标")
-
-            bd = df[df['专业'] == '大数据管理'] if '大数据管理' in df['专业'].unique() else df.head(50)
-
-            if not bd.empty:
-                # 计算四个指标
-                avg_attendance = bd['上课出勤率'].mean()
-                avg_final_score = bd['期末考试分数'].mean()
-                pass_rate = (bd['期末考试分数'] >= 60).mean()
-                avg_study_hours = bd['每周学习时长（小时）'].mean()
-
-                # 创建 1×4 横向子图布局（宽度更宽，高度更窄）
-                fig, axes = plt.subplots(1, 4, figsize=(18, 5.5))  # 1行4列，宽18高5.5适配横向显示
-                fig.suptitle("大数据管理专业关键指标（横向排列）", fontsize=16, color='white', y=0.95)
-
-                # 调整子图间距（横向间距wspace=0.4，纵向间距hspace=0.2）
-                plt.subplots_adjust(hspace=0.2, wspace=0.4, top=0.85, bottom=0.15)
-
-                # 子图1: 平均出勤率（横向排列第1个）
-                ax1 = axes[0]
-                ax1.bar(['平均出勤率'], [avg_attendance * 100], color='#2ECC71', width=0.5)  # 调整柱形宽度
-                ax1.set_ylim(0, 110)
-                ax1.set_ylabel('百分比 (%)', color='white', fontsize=10)  # 缩小标签字体
-                ax1.set_title('平均出勤率', color='white', fontsize=12, pad=8)  # 调整标题大小和间距
-                ax1.text(0, avg_attendance * 100 + 3, f'{avg_attendance:.1%}',
-                         ha='center', va='bottom', color='white', fontsize=11, fontweight='bold')
-                ax1.tick_params(colors='white', labelsize=9)
-                ax1.set_xticks([])
-                for spine in ax1.spines.values():
-                    spine.set_color('white')
-
-                # 子图2: 平均期末成绩（横向排列第2个）
-                ax2 = axes[1]
-                ax2.bar(['平均期末成绩'], [avg_final_score], color='#3498DB', width=0.5)
-                ax2.set_ylim(0, 110)
-                ax2.set_ylabel('分数', color='white', fontsize=10)
-                ax2.set_title('平均期末成绩', color='white', fontsize=12, pad=8)
-                ax2.text(0, avg_final_score + 2, f'{avg_final_score:.1f}',
-                         ha='center', va='bottom', color='white', fontsize=11, fontweight='bold')
-                ax2.tick_params(colors='white', labelsize=9)
-                ax2.set_xticks([])
-                for spine in ax2.spines.values():
-                    spine.set_color('white')
-
-                # 子图3: 及格率（横向排列第3个）
-                ax3 = axes[2]
-                ax3.bar(['及格率'], [pass_rate * 100], color='#E74C3C', width=0.5)
-                ax3.set_ylim(0, 110)
-                ax3.set_ylabel('百分比 (%)', color='white', fontsize=10)
-                ax3.set_title('及格率', color='white', fontsize=12, pad=8)
-                ax3.text(0, pass_rate * 100 + 3, f'{pass_rate:.1%}',
-                         ha='center', va='bottom', color='white', fontsize=11, fontweight='bold')
-                ax3.tick_params(colors='white', labelsize=9)
-                ax3.set_xticks([])
-                for spine in ax3.spines.values():
-                    spine.set_color('white')
-
-                # 子图4: 平均学习时长（横向排列第4个）
-                ax4 = axes[3]
-                ax4.bar(['平均学习时长'], [avg_study_hours], color='#F39C12', width=0.5)
-                ax4.set_ylim(0, max(avg_study_hours * 1.4, 40))  # 动态上限
-                ax4.set_ylabel('小时/周', color='white', fontsize=10)
-                ax4.set_title('平均学习时长', color='white', fontsize=12, pad=8)
-                ax4.text(0, avg_study_hours + 1.2, f'{avg_study_hours:.1f}h',
-                         ha='center', va='bottom', color='white', fontsize=11, fontweight='bold')
-                ax4.tick_params(colors='white', labelsize=9)
-                ax4.set_xticks([])
-                for spine in ax4.spines.values():
-                    spine.set_color('white')
-
-                # 整体背景与边框（保持深色主题一致）
-                fig.patch.set_facecolor('#0E1117')
-                for ax in axes.flat:
-                    ax.set_facecolor('#0E1117')
-
-                st.pyplot(fig)
-                plt.close(fig)
-
-            else:
-                st.info("暂无大数据管理专业数据")
-
-# ==================== 页面3：期末成绩预测 ====================
-elif page == "期末成绩预测":
-    st.title("🔮 期末成绩预测")
-    if model is None or df.empty:
-        st.error("❌ 预测功能不可用：模型或数据文件缺失")
-    else:
-        st.markdown("### 填写以下信息，立即获取精准预测结果")
-        with st.form("预测表单"):
-            col1, col2 = st.columns(2)
-            with col1:
-                student_id = st.text_input("学号（仅展示用）", "2023123456")
-                gender = st.selectbox("性别", ["男", "女"])
-                major = st.selectbox("专业", sorted(df['专业'].unique()))
-                study_hours = st.slider("每周学习时长（小时）", 5, 40, 20)
-
-            with col2:
-                attendance = st.slider("上课出勤率", 0.60, 1.00, 0.90, step=0.01)
-                midterm = st.slider("期中考试分数", 0, 100, 75)
-                homework = st.slider("作业完成率", 0.60, 1.00, 0.90, step=0.01)
-
-            submitted = st.form_submit_button(
-                "立即预测期末成绩",
-                use_container_width=True,
-                type="primary"
-            )
-
-            if submitted:
-                try:
-                    # 转换类别特征
-                    g_code = le_gender.transform([gender])[0]
-                    m_code = le_major.transform([major])[0]
-
-                    # 构造输入数据
-                    input_data = np.array([[
-                        g_code, m_code, study_hours,
-                        attendance, midterm, homework
-                    ]])
-
-                    # 预测成绩
-                    pred = model.predict(input_data)[0]
-                    st.markdown(f"## 预测期末成绩：**{pred:.2f} 分**")
-
-                    # 结果提示
-                    if pred >= 60:
-                        st.balloons()
-                        st.success("恭喜！极大概率及格！")
-                        st.image("https://thumbs.dreamstime.com/b/group-business-people-meeting-18988469.jpg")
-                    else:
-                        st.error("有挂科风险！请引起重视")
-                        st.image("https://images.unsplash.com/photo-1542744095-291d1f67b221?w=800")
-
-                except Exception as e:
-                    st.error(f"预测失败：{str(e)}")
-
-# ==================== 页脚 ====================
-st.markdown("---")
-st.markdown("""
-    <div style="text-align: center;">
-        学生成绩分析与预测系统 · 模型分离 · 高精度预测 · 黑底高颜值完整版
-    </div>
-""", unsafe_allow_html=True)
+# 程序入口：当脚本直接运行时，执行main函数
+if __name__ == "__main__":
+    main()
